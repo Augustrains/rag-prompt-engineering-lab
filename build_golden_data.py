@@ -1,13 +1,8 @@
-# -*- coding: utf-8 -*-
-# --------------------------------------------
-# 项目名称: LLM任务型对话Agent
-# 版权所有  @丁师兄大模型
-# --------------------------------------------
 
 """Build DeepEval Golden data from an evaluation set.
 
-默认输入为 data/qa_pairs/test_qa_pair_verify.json，输出为
-data/golden/goldens.jsonl。脚本会兼容当前项目中的评测集字段：
+默认输入为 data/qa_pairs/test_qa_pair_verify.json
+输出为data/golden/goldens.jsonl。脚本会兼容当前项目中的评测集字段：
 
 - question/query/input -> Golden.input
 - answer/output/expected_output/reference -> Golden.expected_output
