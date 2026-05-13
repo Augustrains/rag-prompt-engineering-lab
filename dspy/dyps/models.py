@@ -60,9 +60,7 @@ class StudentRAG(dspy.Module):
         params = prompt_params or {}
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
-        system_prompt = None
-        if params.get("use_cot"):
-            system_prompt = '你是一个严谨的知识库问答助手。请先分析问题中的关键信息需求，逐步推理，再给出精准的答案。如果无法从知识库中得到答案，请说"无答案"，不要编造。'
+        system_prompt = params.get("system_prompt") or None
 
         result = self.pipeline.answer(input, temperature=temperature, max_tokens=max_tokens, system_prompt=system_prompt)
 
@@ -190,21 +188,22 @@ class DSPyLMWrapper:
         self,
         model: str,
         api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_base: Optional[str] = None,
         temperature: float = 0.0,
         max_tokens: int = 4096,
     ):
         # DSPy LM expects model string like "openai/gpt-4"
         self.model_name = model  # e.g. "openai/deepseek-v4-flash"
         self._api_key = api_key or os.environ.get("DOUBAO_API_KEY", "")
-        self._base_url = base_url or os.environ.get("DOUBAO_BASE_URL", "")
+        self._base_url = api_base or os.environ.get("DOUBAO_BASE_URL", "")
         self.temperature = temperature
         self.max_tokens = max_tokens
 
+        # LiteLLM (DSPy 3.x backend) uses api_base not base_url for custom endpoints
         self._lm = dspy.LM(
             model=model,
             api_key=self._api_key,
-            base_url=self._base_url,
+            api_base=self._base_url,
             temperature=temperature,
         )
 

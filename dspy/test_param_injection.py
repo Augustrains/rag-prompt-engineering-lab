@@ -45,18 +45,26 @@ pred1 = student(input=test_queries[0], prompt_params=p1)
 print(f"  Answer ({len(pred1.answer)} chars): {pred1.answer[:200]}...")
 print(f"  Context count: {len(pred1.retrieval_context)}")
 
-# ── Test 2: High temperature + CoT ──
+# ── Test 2: Custom system_prompt + high temperature ──
 print("\n" + "=" * 60)
-print("TEST 2: temperature=0.8, use_cot=True")
-p2 = {"temperature": 0.8, "max_tokens": 512, "use_cot": True}
+print("TEST 2: custom system_prompt, temperature=0.8")
+p2 = {
+    "temperature": 0.8,
+    "max_tokens": 512,
+    "system_prompt": "你是一个严谨的汽车技术专家。请先逐步推理，再给出精准答案。如果不确定，请如实说明。",
+}
 pred2 = student(input=test_queries[0], prompt_params=p2)
 print(f"  Answer ({len(pred2.answer)} chars): {pred2.answer[:200]}...")
 print(f"  Context count: {len(pred2.retrieval_context)}")
 
-# ── Test 3: Same query, different params (cold + short) ──
+# ── Test 3: Different system_prompt, colder + shorter ──
 print("\n" + "=" * 60)
-print("TEST 3: temperature=0.0, max_tokens=128, no CoT")
-p3 = {"temperature": 0.0, "max_tokens": 128, "use_cot": False}
+print("TEST 3: short system_prompt, temperature=0.0, max_tokens=128")
+p3 = {
+    "temperature": 0.0,
+    "max_tokens": 128,
+    "system_prompt": "用一句话简洁回答问题。",
+}
 pred3 = student(input=test_queries[0], prompt_params=p3)
 print(f"  Answer ({len(pred3.answer)} chars): {pred3.answer[:200]}...")
 print(f"  Context count: {len(pred3.retrieval_context)}")
@@ -65,8 +73,8 @@ print(f"  Context count: {len(pred3.retrieval_context)}")
 print("\n" + "=" * 60)
 print("RESULTS COMPARISON (same query)")
 print(f"  Test 1 (default):     {len(pred1.answer)} chars")
-print(f"  Test 2 (hot+cot):     {len(pred2.answer)} chars")
-print(f"  Test 3 (cold+short):  {len(pred3.answer)} chars")
+print(f"  Test 2 (custom+cot):  {len(pred2.answer)} chars")
+print(f"  Test 3 (short+cold):  {len(pred3.answer)} chars")
 
 # Check if answers are actually different
 answers_differ = (pred1.answer != pred2.answer) or (pred1.answer != pred3.answer)

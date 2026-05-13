@@ -155,6 +155,12 @@ def parse_args() -> argparse.Namespace:
         default=0.7,
         help="Teacher win rate threshold for early stopping (default: 0.7)",
     )
+    parser.add_argument(
+        "--initial-prompt",
+        type=str,
+        default=None,
+        help="Initial system prompt text. If not set, uses a built-in default.",
+    )
 
     # Evaluation
     parser.add_argument(
@@ -216,6 +222,12 @@ def setup_environment() -> None:
     if not os.environ.get("DOUBAO_API_KEY"):
         raise ValueError("DOUBAO_API_KEY not found. Set it in config.ini or environment.")
 
+    # LiteLLM (DSPy 3.x backend) uses OPENAI_API_KEY / OPENAI_BASE_URL for openai/* model prefix
+    if not os.environ.get("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = os.environ["DOUBAO_API_KEY"]
+    if not os.environ.get("OPENAI_BASE_URL"):
+        os.environ["OPENAI_BASE_URL"] = os.environ["DOUBAO_BASE_URL"]
+
 
 def load_dataset(args: argparse.Namespace) -> GoldenDataset:
     """Load and split the golden dataset."""
@@ -264,7 +276,7 @@ def setup_models(args: argparse.Namespace) -> Tuple[StudentRAG, TeacherLM, DeepE
     dspy_lm = DSPyLMWrapper(
         model=args.dspy_model,
         api_key=os.environ.get("DOUBAO_API_KEY"),
-        base_url=os.environ.get("DOUBAO_BASE_URL"),
+        api_base=os.environ.get("DOUBAO_BASE_URL"),
         temperature=args.dspy_temperature,
     )
     print(f"[Model] DSPy LM: {args.dspy_model}")
@@ -336,13 +348,15 @@ async def evaluate_on_test(
     # Generate student answers
     test_records = []
     for ex in tqdm(test_examples, desc="Generating test answers"):
-        context = ex.retrieval_context or []
+        retrieval_context = []
         try:
             pred = student(
                 input=ex.input,
-                retrieval_context=context,
+                retrieval_context=ex.retrieval_context or [],
             )
             actual = pred.answer
+            # Use student RAG's actual retrieved context for evaluation
+            retrieval_context = pred.retrieval_context or []
         except Exception as e:
             print(f"[WARN] Test inference failed for {getattr(ex, 'unique_id', '?')}: {e}")
             actual = ""
@@ -353,7 +367,7 @@ async def evaluate_on_test(
             "input": ex.input,
             "expected_output": ex.expected_output or "",
             "actual_output": actual,
-            "retrieval_context": context,
+            "retrieval_context": retrieval_context,
         })
 
     # Evaluate with DeepEval
@@ -438,6 +452,7 @@ def main() -> None:
         "max_demos": args.max_demos,
         "cold_start_samples": args.cold_start,
         "teacher_win_threshold": args.teacher_win_threshold,
+        "initial_system_prompt": args.initial_prompt,
     }
     optimizer = DYPSOptimizer(
         student_module=student,
@@ -482,7 +497,14 @@ def main() -> None:
     print("DYPS Optimization Complete!")
     print("=" * 60)
     print(f"Best score (dev): {result.best_score:.4f}")
-    print(f"Best params: {result.best_prompt_params}")
+    best = result.best_prompt_params or {}
+    print(f"Best temperature: {best.get('temperature', 'N/A')}")
+    print(f"Best max_tokens: {best.get('max_tokens', 'N/A')}")
+    best_prompt = best.get('system_prompt', '')
+    if best_prompt:
+        truncated = best_prompt[:120] + "..." if len(best_prompt) > 120 else best_prompt
+        print(f"Best system_prompt: {truncated}")
+        print(f"  (full prompt in run_summary.json)")
     if test_summary:
         print(f"Test overall: {test_summary.get('overall', 0):.4f}")
 

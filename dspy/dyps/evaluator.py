@@ -220,10 +220,13 @@ class Evaluator:
                             await asyncio.sleep(2 * attempt)
 
                 if metric_name not in metric_results:
-                    raise RuntimeError(
-                        f"Metric {metric_name} failed after {self.MAX_RETRIES} "
-                        f"attempts: {last_error}"
-                    )
+                    print(f"[WARN] Metric {metric_name} failed after {self.MAX_RETRIES} attempts: {last_error}")
+                    metric_results[metric_name] = {
+                        "score": 0.0,
+                        "success": False,
+                        "reason": str(last_error),
+                        "attempts": self.MAX_RETRIES,
+                    }
 
             scores = {
                 "answer_relevancy": metric_results.get("AnswerRelevancyMetric", {}).get("score", 0.0),

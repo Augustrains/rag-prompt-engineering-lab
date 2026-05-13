@@ -31,6 +31,14 @@ from .data import GoldenDataset, GoldenRecord
 from .evaluator import DeepEvalJudge, EvalResult, Evaluator
 
 
+# ──────────────────────────── 默认提示词 ────────────────────────────
+
+DEFAULT_SYSTEM_PROMPT = (
+    "你是一个知识库问答助手。请基于检索到的上下文信息，"
+    "准确、简洁地回答问题。如果无法从知识库中获得答案，请如实说明。"
+)
+
+
 # ──────────────────────────── 数据类型 ────────────────────────────
 
 @dataclass
@@ -214,21 +222,22 @@ class BootstrapDemonstrator:
         demos = []
 
         for example in tqdm(examples, desc="Bootstrapping demos"):
-            # Get retrieval context from example
-            retrieval_context = example.retrieval_context or []
+            student_answer = ""
+            retrieval_context = []
 
-            # Get student answer
+            # Get student answer (student RAG does its own BM25+Milvus retrieval internally)
             try:
                 student_pred = student_module(
                     input=example.input,
-                    retrieval_context=retrieval_context,
+                    retrieval_context=example.retrieval_context or [],
                 )
                 student_answer = student_pred.answer
+                # Use the actual retrieved context from student RAG for teacher and scoring
+                retrieval_context = student_pred.retrieval_context or []
             except Exception as e:
                 print(f"[WARN] Student inference failed: {e}")
-                student_answer = ""
 
-            # Get teacher answer
+            # Get teacher answer (pass student-retrieved context for high-quality reference)
             try:
                 teacher_pred = teacher_module(
                     input=example.input,
@@ -349,6 +358,54 @@ class HintGenerator:
                 "scores": {"answer_relevancy": 0.0, "faithfulness": 0.0, "contextual_recall": 0.0},
             }
 
+    def synthesize_improved_prompt(
+        self,
+        current_prompt: str,
+        hints: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Synthesize an improved system_prompt from aggregated evaluation feedback.
+
+        The teacher model rewrites the system_prompt to address the issues
+        identified in the worst-performing examples.
+        """
+        if not hints:
+            return current_prompt
+
+        hints_text = "\n\n".join([
+            f"问题{i+1}: {h.get('issue', 'N/A')}\n"
+            f"改进建议: {h.get('hint', 'N/A')}"
+            for i, h in enumerate(hints[:3])
+        ])
+
+        system_msg = (
+            "你是一个提示词优化专家。根据以下评估反馈，重写系统提示词以改进模型回答质量。"
+            "改进后的提示词应：1) 针对反馈中指出的问题，2) 保持简洁清晰，3) 使用中文。"
+            "请只输出改进后的系统提示词文本，不要输出任何解释。"
+        )
+
+        user_prompt = (
+            f"{system_msg}\n\n"
+            f"【当前系统提示词】\n{current_prompt}\n\n"
+            f"【评估反馈 - 学生模型最差的回答】\n{hints_text}\n\n"
+            f"改进后的系统提示词："
+        )
+
+        try:
+            completion = self._client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.3,
+                max_tokens=1024,
+            )
+            new_prompt = (completion.choices[0].message.content or "").strip()
+            if len(new_prompt) < 10 or len(new_prompt) > 2000:
+                return current_prompt
+            return new_prompt
+        except Exception as e:
+            print(f"[WARN] Prompt synthesis failed: {e}")
+            return current_prompt
+
 
 # ──────────────────────────── DYPS 优化器 ────────────────────────────
 
@@ -403,6 +460,9 @@ class DYPSOptimizer:
         self._history: List[Dict[str, Any]] = []
         self._best_score = 0.0
         self._best_params: Dict[str, Any] = {}
+        self._last_hint_feedback: Optional[List[Dict[str, Any]]] = None
+        self._seen_prompts: set = set()
+        self.initial_system_prompt = cfg.get("initial_system_prompt")
 
     def cold_start(self, examples: List[dspy.Example]) -> List[DemoRecord]:
         """
@@ -439,36 +499,75 @@ class DYPSOptimizer:
     def generate_new_params(
         self,
         history: List[Dict[str, Any]],
+        hint_feedback: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
-        Generate new prompt parameters based on history.
+        Generate new prompt parameters based on history and hint feedback.
 
-        Uses simple exploitation-exploration strategy.
+        Three-way strategy:
+        - 15% Hint-driven exploration: rewrite system_prompt using teacher feedback
+        - 20% Random exploration: larger parameter jumps
+        - 65% Exploit: keep best system_prompt, small parameter tweaks
         """
         if not history:
-            # Random initialization
             return {
-                "temperature": random.uniform(0.0, 0.5),
+                "system_prompt": self.initial_system_prompt or DEFAULT_SYSTEM_PROMPT,
+                "temperature": random.uniform(0.0, 0.3),
                 "max_tokens": random.randint(512, 2048),
-                "use_cot": random.choice([True, False]),
-                "demo_selection": random.choice(["best", "diverse", "mixed"]),
             }
 
-        # Exploit: mutate from best params
         best = history[-1]["params"]
         new_params = copy.deepcopy(best)
+        hints_available = bool(hint_feedback and len(hint_feedback) > 0)
 
-        # Random mutations
-        if random.random() < 0.3:
-            new_params["temperature"] = max(0.0, min(1.0,
-                best["temperature"] + random.uniform(-0.1, 0.1)))
-        if random.random() < 0.3:
-            new_params["max_tokens"] = max(256, min(4096,
-                int(best["max_tokens"] + random.randint(-256, 256))))
-        if random.random() < 0.2:
-            new_params["use_cot"] = not best.get("use_cot", False)
+        roll = random.random()
+
+        if roll < 0.15 and hints_available:
+            # Hint-driven prompt exploration: rewrite system_prompt via teacher
+            new_params["system_prompt"] = self._synthesize_improved_prompt(
+                current_prompt=best.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
+                hints=hint_feedback,
+            )
+            self._mutate_inference_params(new_params, aggressive=False)
+
+        elif roll < 0.35:
+            # Random exploration: larger parameter jumps
+            if random.random() < 0.4 and hints_available:
+                new_params["system_prompt"] = self._synthesize_improved_prompt(
+                    current_prompt=best.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
+                    hints=hint_feedback,
+                )
+            self._mutate_inference_params(new_params, aggressive=True)
+
+        else:
+            # Exploit: keep best system_prompt, small parameter tweaks
+            self._mutate_inference_params(new_params, aggressive=False)
 
         return new_params
+
+    def _mutate_inference_params(
+        self,
+        params: Dict[str, Any],
+        aggressive: bool = False,
+    ) -> None:
+        """Mutate temperature and max_tokens in-place."""
+        temp_scale = 0.2 if aggressive else 0.05
+        token_scale = 512 if aggressive else 128
+
+        if random.random() < 0.6:
+            params["temperature"] = max(0.0, min(1.0,
+                params.get("temperature", 0.1) + random.uniform(-temp_scale, temp_scale)))
+        if random.random() < 0.6:
+            params["max_tokens"] = max(256, min(4096,
+                int(params.get("max_tokens", 1024) + random.randint(-token_scale, token_scale))))
+
+    def _synthesize_improved_prompt(
+        self,
+        current_prompt: str,
+        hints: List[Dict[str, Any]],
+    ) -> str:
+        """Forward to HintGenerator for prompt synthesis."""
+        return self.hint_gen.synthesize_improved_prompt(current_prompt, hints)
 
     async def optimize_async(
         self,
@@ -496,20 +595,32 @@ class DYPSOptimizer:
         print(f"[DYPS] Starting optimization for {trials} trials...")
 
         for trial_idx in range(trials):
-            # Generate new params
-            params = self.generate_new_params(self._history)
+            # Generate new params (feed hint feedback from previous trial)
+            params = self.generate_new_params(
+                history=self._history,
+                hint_feedback=self._last_hint_feedback,
+            )
+
+            # Deduplicate system prompts to avoid redundant API calls
+            prompt_key = params.get("system_prompt", "")[:200]
+            if prompt_key in self._seen_prompts and len(self._seen_prompts) > 0:
+                self._mutate_inference_params(params, aggressive=True)
+                prompt_key = params.get("system_prompt", "")[:200]
+            self._seen_prompts.add(prompt_key)
 
             # Evaluate on dev set
             dev_records = []
             for ex in dev_examples:
-                context = ex.retrieval_context or []
+                retrieval_context = []
                 try:
                     pred = self.student(
                         input=ex.input,
-                        retrieval_context=context,
+                        retrieval_context=ex.retrieval_context or [],
                         prompt_params=params,
                     )
                     actual = pred.answer
+                    # Use student RAG's actual retrieved context for evaluation
+                    retrieval_context = pred.retrieval_context or []
                 except Exception as e:
                     print(f"[WARN] Trial {trial_idx} inference failed: {e}")
                     actual = ""
@@ -518,7 +629,7 @@ class DYPSOptimizer:
                     "input": ex.input,
                     "expected_output": ex.expected_output or "",
                     "actual_output": actual,
-                    "retrieval_context": context,
+                    "retrieval_context": retrieval_context,
                     "unique_id": getattr(ex, "unique_id", str(trial_idx)),
                     "category": getattr(ex, "category", ""),
                 })
@@ -557,9 +668,40 @@ class DYPSOptimizer:
 
             print(f"Trial {trial_idx+1}/{trials}: score={overall:.4f}, teacher_win_rate={teacher_win_rate:.2f}")
 
-            # Early stopping if teacher win rate below threshold
+            # Generate hint feedback for next trial (analyze worst examples)
+            if self.judge and results:
+                sorted_results = sorted(
+                    zip(dev_records, results),
+                    key=lambda pair: pair[1].overall_score,
+                )
+                worst_pairs = sorted_results[:3]
+
+                hint_feedback = []
+                for record, eval_result in worst_pairs:
+                    try:
+                        hint = self.hint_gen.generate_hint(
+                            input=record["input"],
+                            student_answer=record["actual_output"],
+                            expected=record["expected_output"],
+                            retrieval_context=record.get("retrieval_context", []),
+                        )
+                        hint_feedback.append(hint)
+                    except Exception as e:
+                        print(f"[WARN] Hint generation failed: {e}")
+
+                self._last_hint_feedback = hint_feedback if hint_feedback else None
+            else:
+                self._last_hint_feedback = None
+
+            # Early stopping: exit when student performs well enough
+            # teacher_win_rate measures the fraction of examples where teacher
+            # would significantly outperform; low value means student is good
             if teacher_win_rate < (1.0 - self.teacher_win_threshold):
-                print(f"[DYPS] Early stopping: teacher win rate too high ({teacher_win_rate:.2f})")
+                print(
+                    f"[DYPS] Early stopping at trial {trial_idx+1}: "
+                    f"student performance sufficient "
+                    f"(improvement needed on {teacher_win_rate:.1%} of examples)"
+                )
                 break
 
         # Find best
