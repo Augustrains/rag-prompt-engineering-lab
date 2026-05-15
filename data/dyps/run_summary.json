@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-05-13T18:44:04.559331",
+  "args": {
+    "golden_path": "/root/autodl-tmp/rag-prompt-engineering-lab-upload/data/golden/goldens.jsonl",
+    "output_dir": "/root/autodl-tmp/rag-prompt-engineering-lab-upload/data/dyps",
+    "train_ratio": 0.7,
+    "dev_ratio": 0.15,
+    "seed": 42,
+    "teacher_model": "openai/deepseek-v4-flash",
+    "student_bm25_topk": 5,
+    "student_milvus_topk": 10,
+    "student_rerank_topk": 5,
+    "num_trials": 30,
+    "cold_start": 10,
+    "max_demos": 8,
+    "teacher_win_threshold": 0.7,
+    "initial_prompt": null,
+    "max_concurrency": 1,
+    "dspy_model": "openai/deepseek-v4-flash",
+    "dspy_temperature": 0.0,
+    "dry_run": false,
+    "skip_test_eval": false
+  },
+  "dataset_stats": {
+    "total": 676,
+    "by_category": {
+      "导航与地图": 9,
+      "无法回答/闲聊": 25,
+      "充电相关": 122,
+      "媒体与连接": 23,
+      "车辆参数与规格": 16,
+      "驾驶操控与底盘": 89,
+      "车门锁与后备箱": 45,
+      "空调与温度控制": 22,
+      "辅助驾驶与智能功能": 79,
+      "车辆通用功能": 71,
+      "触控屏与系统设置": 42,
+      "安全与儿童保护": 46,
+      "哨兵与驻车模式": 4,
+      "HomeLink与外部设备": 6,
+      "维护与保养": 19,
+      "警报与故障处理": 38,
+      "后视镜": 4,
+      "USB与数据记录": 4,
+      "灯光与照明": 9,
+      "软件与更新": 2,
+      "行人警示系统": 1
+    }
+  },
+  "train_baseline": {
+    "train_baseline_score": 0.85,
+    "train_baseline_positive_rate": 0.875,
+    "train_baseline_samples": 8
+  },
+  "best_dev_score": 0.9608976608187134,
+  "best_params": {
+    "system_prompt": "你是一个知识库问答助手。请基于检索到的上下文信息，准确、简洁地回答问题。如果无法从知识库中获得答案，请如实说明。",
+    "temperature": 0.21725441328818662,
+    "max_tokens": 1469
+  },
+  "num_trials": 1,
+  "history": [
+    {
+      "trial": 0,
+      "params": {
+        "system_prompt": "你是一个知识库问答助手。请基于检索到的上下文信息，准确、简洁地回答问题。如果无法从知识库中获得答案，请如实说明。",
+        "temperature": 0.21725441328818662,
+        "max_tokens": 1469
+      },
+      "score": 0.9608976608187134,
+      "teacher_win_rate": 0.042105263157894736
+    }
+  ],
+  "test_summary": {
+    "overall": 0.9527575944170772,
+    "answer_relevancy": 0.9239429392446634,
+    "faithfulness": 0.9777298850574713,
+    "contextual_recall": 0.9482758620689655
+  }
+}

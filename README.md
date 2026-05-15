@@ -22,8 +22,19 @@ rag-prompt-engineering-lab-upload/
 ├── src/                      # 源代码
 │   └── utils.py              # HybridRAGPipeline
 ├── build_golden_data.py      # 构建 Golden 数据
-├── run_golden_rag.py         # 运行 RAG 推理
-└── evaluate_golden_deepeval.py  # DeepEval 评测
+├── run_golden_rag.py         # 运行 RAG 推理 (20条)
+├── run_golden_rag_more.py    # 运行 RAG 推理 (52条扩展)
+├── evaluate_golden_deepeval.py  # DeepEval 评测
+├── dspy/                     # DSPy DYPS 自动提示词优化
+│   ├── run_dyps.py           # 主入口脚本
+│   ├── dyps/                 # 核心模块
+│   │   ├── config.py         # 配置中心
+│   │   ├── data.py           # 数据加载与切分
+│   │   ├── models.py         # 教师/学生/DSPy LM 三种模型封装
+│   │   ├── signatures.py     # DSPy 签名定义
+│   │   ├── evaluator.py      # DeepEval 评测模块
+│   │   └── teleprompter.py   # DYPS 优化器核心
+│   └── test/                 # 测试脚本
 ```
 
 ---
@@ -146,3 +157,96 @@ v6 失败分类：
 | P1 | RAG 检索优化 | 调查 Case 3/4 的 retrieval context，确认 chunk 覆盖度 |
 | P2 | RAG chunking 优化 | 确认"危险警告灯"、"充电接口入口加热器"是否在知识库中且可检索 |
 | P3 | 提示词维护 | 如有新场景需求，再在 v6 基础上做小幅调整 |
+| P4 | DSPy 自动优化 | 已初步验证（见下方 DSPy 章节），后续可扩大 cold-start 样本量 |
+
+---
+
+## DSPy DYPS 自动提示词优化
+
+### 背景
+
+手动调优 v1~v6 迭代了 6 个版本，每个版本需要：
+1. 构思提示词修改方案
+2. 运行 RAG 推理（52 条 × 每次数分钟）
+3. DeepEval 评测
+4. 人工分析失败 case
+
+这个流程耗时且依赖经验。**DYPS（Dynamic Prompt Selection）** 借助教师-学生架构，让强 API 模型自动指导学生模型优化提示词参数。
+
+### 架构
+
+```
+教师 (deepseek-v4-flash API)
+  │
+  │ 评分 / 生成 hints / 参考答案
+  ▼
+学生 (本地 Qwen3-8B + BM25 + Milvus + BGE Reranker)
+  │
+  │ 动态注入: system_prompt, temperature, max_tokens
+  ▼
+vLLM 推理 → DeepEval 三维评测 → 教师反馈 → 下一轮参数
+```
+
+### 运行配置
+
+| 参数 | 值 |
+|------|-----|
+| 教师模型 | deepseek-v4-flash (API) |
+| 学生模型 | Qwen3-8B (本地 vLLM) |
+| 评测指标 | AnswerRelevancy + Faithfulness + ContextualRecall |
+| Golden 数据 | 676 条（train 70% / dev 15% / test 15%，按类别分层） |
+| 教师胜率阈值 | 0.7（低于 1-0.7=0.3 时早停） |
+
+### 评测结果
+
+
+**测试集各维度得分：**
+
+| 维度 | 分数 | 权重 |
+|------|------|------|
+| AnswerRelevancy（答案相关性） | 0.9239 | 0.3 |
+| Faithfulness（忠诚度/无幻觉） | 0.9777 | 0.4 |
+| ContextualRecall（上下文召回） | 0.9483 | 0.3 |
+
+
+### 与手动调优 v6 横向对比
+
+| | DYPS 自动优化 | v6 手动提示词 | 差异 |
+|------|-------------|-------------|------|
+| **Overall** | **0.9528** | 0.9416 | DYPS +1.1% |
+| **Faithfulness** | 0.9777 | **0.9840** | v6 +0.6% |
+| **AnswerRelevancy** | 0.9239 | 0.9048 | DYPS +1.9% |
+| **ContextualRecall** | 0.9483 | 0.9359 | DYPS +1.2% |
+
+
+
+### 运行方式
+
+```bash
+# 进入 DSPy 目录
+cd dspy/
+
+# 基础运行（默认 30 trials）
+/root/autodl-tmp/conda/envs/rag/bin/python run_dyps.py
+
+# 快速验证（仅 5 trials，跳过测试集评测）
+/root/autodl-tmp/conda/envs/rag/bin/python run_dyps.py --num-trials 5 --skip-test-eval
+
+# 仅检查配置不执行
+/root/autodl-tmp/conda/envs/rag/bin/python run_dyps.py --dry-run
+
+# 自定义初始提示词
+/root/autodl-tmp/conda/envs/rag/bin/python run_dyps.py \
+    --initial-prompt "你是特斯拉Model 3的专家问答系统..." \
+    --num-trials 20
+```
+
+### 输出文件
+
+运行后在 `data/dyps/` 生成：
+
+| 文件 | 内容 |
+|------|------|
+| `run_summary.json` | 完整运行摘要（参数、最佳分、trial 历史、测试汇总） |
+| `test_eval_results.jsonl` | 测试集每条记录的三维评测详情 |
+| `dyps_YYYYMMDD_HHMMSS.log` | 完整运行日志 |
